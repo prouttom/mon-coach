@@ -1268,6 +1268,7 @@
                         <svg width="210" height="210" viewBox="0 0 210 210" role="img" aria-label="Schéma assiette équilibrée">
                             <circle cx="105" cy="105" r="96" fill="#f8fafc" stroke="#cbd5e1" stroke-width="4"/>
                             <path d="M105,15 A90,90 0 0,0 105,195 Z" fill="#10b981" opacity="0.88"/>
+                            <path d="M105,15 A90,90 0 0,1 195,105 L52,52 Z" fill="none"/>
                             <path d="M105,15 A90,90 0 0,1 195,105 L105,105 Z" fill="#f97316" opacity="0.88"/>
                             <path d="M105,105 L195,105 A90,90 0 0,1 105,195 Z" fill="#eab308" opacity="0.88"/>
                             <line x1="105" y1="15" x2="105" y2="195" stroke="#ffffff" stroke-width="3"/>
@@ -1588,7 +1589,7 @@
                         <p style="font-size: 0.83rem; color: #475569; margin-bottom: 12px;">
                             1. Va sur <strong>aistudio.google.com</strong><br>
                             2. Clique sur <strong>« Get API key »</strong> puis <strong>« Create API key »</strong><br>
-                            3. Colle ta clé ci-dessous (ne la mets jamais directement dans le code HTML publié sur GitHub).
+                            3. Colle ta clé ci-dessous (modèle actif : <strong>gemini-2.5-flash</strong>).
                         </p>
 
                         <div class="form-group">
@@ -1600,7 +1601,7 @@
                             <button type="button" class="btn btn-emerald btn-sm" id="btn-save-api">Enregistrer la clé</button>
                             <button type="button" class="btn btn-outline btn-sm" id="btn-test-api">Tester la connexion</button>
                         </div>
-                        <p id="api-status-text" style="font-size: 0.82rem; font-weight: 700; margin-top: 8px; color: #475569;"></p>
+                        <p id="api-status-text" style="font-size: 0.82rem; font-weight: 700; margin-top: 8px; color: #475569; white-space: pre-line;"></p>
                     </div>
 
                     <!-- Export / Import JSON -->
@@ -1646,6 +1647,8 @@
             // =================================================================
             const STORAGE_KEY = "mon_coach_app_v2";
             const PIN_STORAGE_KEY = "mon_coach_pin_v1";
+            const GEMINI_PRIMARY_MODEL = "gemini-2.5-flash";
+            const GEMINI_FALLBACK_MODEL = "gemini-2.0-flash";
 
             const DAYS_INFO = [
                 { idx: 0, short: "Lun", full: "Lundi" },
@@ -1690,7 +1693,62 @@
             ];
 
             // =================================================================
-            // 2. GESTION DU VERROUILLAGE PAR CODE PIN (4 CHIFFRES)
+            // 2. SERVICE UNIFIÉ GOOGLE GEMINI (2.5-FLASH + REPLI + DIAGNOSTIC)
+            // =================================================================
+            function cleanApiKey(raw) {
+                return String(raw || "").replace(/[\s\u200B-\u200D\uFEFF]/g, "").trim();
+            }
+
+            async function callGeminiApi(rawKey, promptText) {
+                const apiKey = cleanApiKey(rawKey);
+                if (!apiKey) {
+                    throw new Error("Clé API vide.");
+                }
+
+                const modelsToTry = [GEMINI_PRIMARY_MODEL, GEMINI_FALLBACK_MODEL];
+                let lastErrorDetail = "";
+
+                for (let i = 0; i < modelsToTry.length; i++) {
+                    const model = modelsToTry[i];
+                    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+                    const response = await fetch(url, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            contents: [{ parts: [{ text: promptText }] }]
+                        })
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                        if (text) return { text, modelUsed: model };
+                        throw new Error("Réponse vide reçue depuis Gemini.");
+                    }
+
+                    let apiMsg = `HTTP ${response.status}`;
+                    try {
+                        const errJson = await response.json();
+                        if (errJson?.error?.message) {
+                            apiMsg = `${errJson.error.message} (code ${response.status})`;
+                        }
+                    } catch (_) {
+                        // Ignore JSON parse error
+                    }
+                    lastErrorDetail = apiMsg;
+
+                    // On ne tente le modèle de repli que si le modèle primaire retourne 404
+                    if (response.status !== 404) {
+                        break;
+                    }
+                }
+
+                throw new Error(lastErrorDetail || "Erreur de communication avec Gemini.");
+            }
+
+            // =================================================================
+            // 3. GESTION DU VERROUILLAGE PAR CODE PIN (4 CHIFFRES)
             // =================================================================
             let pinBuffer = "";
             let pinMode = "unlock"; // "setup_1", "setup_2", "unlock"
@@ -1799,7 +1857,7 @@
             }
 
             // =================================================================
-            // 3. UTILITAIRES DE DATE (JOUR ACTUEL & SEMAINE ISO)
+            // 4. UTILITAIRES DE DATE (JOUR ACTUEL & SEMAINE ISO)
             // =================================================================
             function getTodayContext() {
                 const now = new Date();
@@ -1843,7 +1901,7 @@
             }
 
             // =================================================================
-            // 4. ÉTAT DE L'APPLICATION & PERSISTANCE LOCALSTORAGE
+            // 5. ÉTAT DE L'APPLICATION & PERSISTANCE LOCALSTORAGE
             // =================================================================
             function buildDefaultWeekMeals(pleasureEnabled, pleasureItems, challengeEnabled) {
                 const meals = [];
@@ -1962,7 +2020,7 @@
                     const def = createDefaultState();
                     return {
                         profile: { ...def.profile, ...(parsed.profile || {}) },
-                        apiKey: parsed.apiKey || "",
+                        apiKey: cleanApiKey(parsed.apiKey || ""),
                         pleasure: { ...def.pleasure, ...(parsed.pleasure || {}) },
                         weekMeals: Array.isArray(parsed.weekMeals) && parsed.weekMeals.length === 7 ? parsed.weekMeals : def.weekMeals,
                         activitiesByDay: Array.isArray(parsed.activitiesByDay) && parsed.activitiesByDay.length === 7 ? parsed.activitiesByDay : def.activitiesByDay,
@@ -1988,7 +2046,7 @@
             }
 
             // =================================================================
-            // 5. NOTIFICATIONS TOAST & NAVIGATION ONGLETS
+            // 6. NOTIFICATIONS TOAST & NAVIGATION ONGLETS
             // =================================================================
             let toastTimer = null;
             function showToast(message) {
@@ -2017,7 +2075,7 @@
             }
 
             // =================================================================
-            // 6. ANALYSE AUTOMATIQUE DES REPAS RÉELS & RADAR D'ÉQUILIBRE
+            // 7. ANALYSE AUTOMATIQUE DES REPAS RÉELS & RADAR D'ÉQUILIBRE
             // =================================================================
             function classifyRealMeal(text) {
                 const lower = (text || "").toLowerCase();
@@ -2127,7 +2185,7 @@
             }
 
             // =================================================================
-            // 7. RENDU ONGLET 2 : NUTRITION & SEMAINIER
+            // 8. RENDU ONGLET 2 : NUTRITION & SEMAINIER
             // =================================================================
             function renderNutritionTab() {
                 renderNutritionRadar();
@@ -2231,7 +2289,7 @@
             }
 
             // =================================================================
-            // 8. RENDU ONGLET 3 : ACTIVITÉ & MOUVEMENT
+            // 9. RENDU ONGLET 3 : ACTIVITÉ & MOUVEMENT
             // =================================================================
             function computeWeeklyActivityStats() {
                 let totalMinutes = 0;
@@ -2316,7 +2374,7 @@
             }
 
             // =================================================================
-            // 9. RENDU ONGLET 1 : BILAN HEBDO & APPEL GEMINI / SIMULATEUR
+            // 10. RENDU ONGLET 1 : BILAN HEBDO & APPEL GEMINI / SIMULATEUR
             // =================================================================
             function renderBilanLiveContext() {
                 const nutStats = computeWeeklyNutritionStats();
@@ -2362,8 +2420,9 @@
                 const weekNumber = appState.checkIns.length + 1;
 
                 let coachResponse = "";
+                const apiKey = cleanApiKey(appState.apiKey);
 
-                if (appState.apiKey && appState.apiKey.trim().startsWith("AIza")) {
+                if (apiKey) {
                     try {
                         const prompt = `Tu es un coach nutrition et perte de poids bienveillant, pragmatique et encourageant. Tu accompagnes ${appState.profile.name} (${appState.profile.age} ans, ${appState.profile.height} cm), qui vit avec sa femme et ses deux enfants et adapte ses portions sur les repas familiaux, tout en travaillant souvent en télétravail.
 
@@ -2381,20 +2440,11 @@ Rédige une analyse structurée en français (3 paragraphes courts et concrets) 
 2. Analyse croisée alimentation familiale / activité physique.
 3. 2 ajustements simples et réalistes pour la semaine prochaine (sans régime strict).`;
 
-                        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(appState.apiKey.trim())}`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                                contents: [{ parts: [{ text: prompt }] }]
-                            })
-                        });
-
-                        if (!response.ok) throw new Error("Erreur API Gemini");
-                        const data = await response.json();
-                        coachResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || buildLocalCoachFeedback(weight, diffPrev, diffStart, hunger, energy, sleep, nutStats, actStats);
+                        const result = await callGeminiApi(apiKey, prompt);
+                        coachResponse = result.text;
                     } catch (err) {
                         coachResponse = buildLocalCoachFeedback(weight, diffPrev, diffStart, hunger, energy, sleep, nutStats, actStats);
-                        showToast("Clé API indisponible : analyse générée via le moteur local.");
+                        showToast(`Gemini indisponible (${err.message}) : bilan généré en mode local.`);
                     }
                 } else {
                     await new Promise(resolve => setTimeout(resolve, 450));
@@ -2444,7 +2494,7 @@ Rédige une analyse structurée en français (3 paragraphes courts et concrets) 
             }
 
             // =================================================================
-            // 10. ONGLET 4 : SOS TÉLÉTRAVAIL & MINUTEUR 5 MINUTES
+            // 11. ONGLET 4 : SOS TÉLÉTRAVAIL & MINUTEUR 5 MINUTES
             // =================================================================
             let timerSeconds = 300;
             let timerInterval = null;
@@ -2476,19 +2526,14 @@ Rédige une analyse structurée en français (3 paragraphes courts et concrets) 
                     return;
                 }
 
-                outEl.textContent = "Recherche de la meilleure parade... ⏳";
+                outEl.textContent = "Recherche de la meilleure parade avec Gemini... ⏳";
+                const apiKey = cleanApiKey(appState.apiKey);
 
-                if (appState.apiKey && appState.apiKey.trim().startsWith("AIza")) {
+                if (apiKey) {
                     try {
                         const prompt = `Tu es un coach comportemental bienveillant spécialisé dans le télétravail et la gestion du grignotage. L'utilisateur te dit : "${situation}". Donne-lui une parade immédiate, concrète et non culpabilisante en 3 étapes courtes (3 à 4 lignes max au total).`;
-                        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(appState.apiKey.trim())}`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-                        });
-                        if (!response.ok) throw new Error("API error");
-                        const data = await response.json();
-                        outEl.textContent = data.candidates?.[0]?.content?.parts?.[0]?.text || buildLocalSosParade(situation);
+                        const result = await callGeminiApi(apiKey, prompt);
+                        outEl.textContent = result.text;
                         return;
                     } catch (e) {
                         // Fallback local
@@ -2503,7 +2548,7 @@ Rédige une analyse structurée en français (3 paragraphes courts et concrets) 
             }
 
             // =================================================================
-            // 11. ONGLET 5 : MA PROGRESSION (GRAPHIQUE SVG PUR + HISTORIQUE)
+            // 12. ONGLET 5 : MA PROGRESSION (GRAPHIQUE SVG PUR + HISTORIQUE)
             // =================================================================
             function renderProgressionTab() {
                 const list = appState.checkIns;
@@ -2622,7 +2667,7 @@ Rédige une analyse structurée en français (3 paragraphes courts et concrets) 
             }
 
             // =================================================================
-            // 12. INITIALISATION PROFIL & ÉCOUTEURS D'ÉVÉNEMENTS
+            // 13. INITIALISATION PROFIL & ÉCOUTEURS D'ÉVÉNEMENTS
             // =================================================================
             function populateProfileForm() {
                 document.getElementById("prof-name").value = appState.profile.name;
@@ -2635,7 +2680,7 @@ Rédige une analyse structurée en français (3 paragraphes courts et concrets) 
                 document.getElementById("prof-api-key").value = appState.apiKey;
 
                 const statusEl = document.getElementById("api-status-text");
-                if (appState.apiKey && appState.apiKey.startsWith("AIza")) {
+                if (appState.apiKey) {
                     statusEl.textContent = "✅ Clé API enregistrée : le coaching IA en direct est actif.";
                     statusEl.style.color = "#047857";
                 } else {
@@ -2926,34 +2971,36 @@ Rédige une analyse structurée en français (3 paragraphes courts et concrets) 
                 });
 
                 document.getElementById("btn-save-api").addEventListener("click", () => {
-                    appState.apiKey = document.getElementById("prof-api-key").value.trim();
+                    const cleaned = cleanApiKey(document.getElementById("prof-api-key").value);
+                    document.getElementById("prof-api-key").value = cleaned;
+                    appState.apiKey = cleaned;
                     saveState();
                     populateProfileForm();
                     showToast("Clé API enregistrée sur cet appareil !");
                 });
 
                 document.getElementById("btn-test-api").addEventListener("click", async () => {
-                    const key = document.getElementById("prof-api-key").value.trim();
+                    const key = cleanApiKey(document.getElementById("prof-api-key").value);
+                    document.getElementById("prof-api-key").value = key;
                     const statusEl = document.getElementById("api-status-text");
+
                     if (!key) {
                         statusEl.textContent = "⚠️ Colle d'abord ta clé API Google AI Studio ci-dessus.";
                         statusEl.style.color = "#b91c1c";
                         return;
                     }
-                    statusEl.textContent = "Test de connexion en cours... ⏳";
+
+                    statusEl.textContent = `Test de connexion en cours (${GEMINI_PRIMARY_MODEL})... ⏳`;
+                    statusEl.style.color = "#475569";
+
                     try {
-                        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(key)}`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ contents: [{ parts: [{ text: "Réponds simplement OK." }] }] })
-                        });
-                        if (!res.ok) throw new Error("Clé invalide");
+                        const res = await callGeminiApi(key, "Réponds simplement OK.");
                         appState.apiKey = key;
                         saveState();
-                        statusEl.textContent = "✅ Connexion réussie avec Google Gemini !";
+                        statusEl.textContent = `✅ Connexion réussie avec Google Gemini (${res.modelUsed}) !`;
                         statusEl.style.color = "#047857";
                     } catch (err) {
-                        statusEl.textContent = "❌ Impossible de valider cette clé. Vérifie qu'elle est bien copiée en entier.";
+                        statusEl.textContent = `❌ Échec de la validation : ${err.message}\nVérifie que ta clé commence bien par AIza et a été copiée via l'icône Copier sur AI Studio.`;
                         statusEl.style.color = "#b91c1c";
                     }
                 });
@@ -2980,6 +3027,7 @@ Rédige une analyse structurée en français (3 paragraphes courts et concrets) 
                             const imported = JSON.parse(ev.target.result);
                             if (!imported || !imported.profile) throw new Error("Format invalide");
                             appState = { ...createDefaultState(), ...imported };
+                            appState.apiKey = cleanApiKey(appState.apiKey);
                             saveState();
                             populateProfileForm();
                             renderBilanLiveContext();
@@ -3010,7 +3058,7 @@ Rédige une analyse structurée en français (3 paragraphes courts et concrets) 
             }
 
             // =================================================================
-            // 13. DÉMARRAGE DE L'APPLICATION
+            // 14. DÉMARRAGE DE L'APPLICATION
             // =================================================================
             document.getElementById("header-full-date").textContent = todayInfo.fullDateFr;
             document.getElementById("header-iso-week").textContent = `Semaine ${todayInfo.isoWeek}`;
